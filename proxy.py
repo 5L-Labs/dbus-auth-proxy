@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 from enum import Enum, auto
-from socket import socket, AF_UNIX, SOCK_STREAM
+from socket import socket, AF_UNIX, SOCK_STREAM, SHUT_RDWR
 
 import argparse
 import re
@@ -67,9 +67,10 @@ def forward(
     except Exception as e:
         print(f"Received error on direction {direction}: {e}")
     finally:
-        if direction == Direction.TO_DBUS:
-            source.close()
-            destination.close()
+        print(f"Shutting down on {direction}")
+        # This will send twice
+        destination.shutdown(SHUT_RDWR)
+        source.close()
 
 
 def start_dbus_proxy(proxy_soc: str, dbus_soc: str, buffer_size: int) -> None:
