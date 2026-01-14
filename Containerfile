@@ -1,16 +1,9 @@
-# Use a lightweight Python base image
-FROM python:3.12-alpine
+FROM python:slim
 
-# Set working directory
-WORKDIR /app
+WORKDIR /proxy
 
-# Copy the client script into the container
-COPY client.py .
+RUN mkdir sockets
 
-RUN apk update && apk add dbus --no-cache
+COPY proxy.py .
 
-# Command to run the client
-# CMD ["python3", "client.py"]
-
-# Command for DBUS
-CMD ["dbus-send", "--bus=unix:path=./proxy.sock", "--print-reply", "--dest=org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.DBus.Introspectable.Introspect"]
+CMD ["python3", "proxy.py"]
