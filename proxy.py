@@ -7,9 +7,9 @@ from enum import Enum, auto
 
 # --- CONFIGURATION ---
 # The path where this proxy will listen for incoming connections
-LISTEN_PATH = "./dbus_proxy.sock"
+LISTEN_PATH = "sockets/upstream_socket"
 # The path where the actual service is listening
-TARGET_PATH = "/run/dbus/system_bus_socket"
+TARGET_PATH = "sockets/system_bus_socket"
 
 SOURCE_UID = 0
 REPLACEMENT_UID_HEX = str(os.getuid()).encode("ascii").hex().encode()
@@ -21,30 +21,32 @@ class Direction(Enum):
     TO_CLIENT = auto()
 
 
-def transform_data(data, direction: Direction):
+def transform_data(data):
     """
     Modify data here.
     direction: 'to_target' or 'to_client'
     """
     # Example: Append a timestamp or modify bytes
-    if direction == Direction.TO_DBUS:
-        if data.startswith(b"\x00AUTH EXTERNAL"):
-            data = data.replace(
-                b"AUTH EXTERNAL " + SOURCE_UID_HEX + b"\r\n",
-                b"AUTH EXTERNAL " + REPLACEMENT_UID_HEX + b"\r\n",
-            )
+    if data.startswith(b"\x00AUTH EXTERNAL"):
+        data = data.replace(
+            b"AUTH EXTERNAL " + SOURCE_UID_HEX + b"\r\n",
+            b"AUTH EXTERNAL " + REPLACEMENT_UID_HEX + b"\r\n",
+        )
     return data
 
 
 def forward(source, destination, direction):
+    transform_auth = direction == Direction.TO_DBUS
     try:
         while True:
             data = source.recv(4096)
             if not data:
                 break
 
-            modified_data = transform_data(data, direction)
-            destination.sendall(modified_data)
+            if transform_auth:
+                data = transform_data(data)
+                transform_auth = False
+            destination.sendall(data)
     except Exception as e:
         pass
     finally:
@@ -53,16 +55,13 @@ def forward(source, destination, direction):
 
 
 def start_unix_proxy():
-    # 1. Clean up the socket file if it already exists
     if os.path.exists(LISTEN_PATH):
         os.remove(LISTEN_PATH)
 
-    # 2. Create the listening socket
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(LISTEN_PATH)
     server.listen(5)
 
-    # Ensure the socket is accessible (optional)
     os.chmod(LISTEN_PATH, 0o777)
 
     print(f"[*] Proxy listening on {LISTEN_PATH}")
