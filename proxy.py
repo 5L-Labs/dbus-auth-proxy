@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 from enum import Enum, auto
-from socket import socket
+from socket import socket, AF_UNIX, SOCK_STREAM
 
 import argparse
 import re
@@ -36,7 +36,9 @@ def transform_uid(data: bytes) -> bytes:
     )
 
 
-def forward(source: socket, destination: socket, direction: Direction) -> None:
+def forward(
+    source: socket, destination: socket, direction: Direction, buffer_size: int
+) -> None:
     """
     Forwards data from source socket to destination socket while replacing AUTH
     EXTERNAL UIDs.
@@ -48,26 +50,29 @@ def forward(source: socket, destination: socket, direction: Direction) -> None:
         source(socket): The source socket
         destination(socket): The destination socket
         direction(Direction): If we're forwarding to or from dbus
+        buffer_size(int): The buffer size used for forwarding
     """
     transform_auth = direction == Direction.TO_DBUS
+    source.settimeout(25.0)
     try:
         while True:
-            data = source.recv(DEFAULT_BUFFER)
+            data = source.recv(buffer_size)
             if not data:
                 break
 
             if transform_auth:
-                data = transform_data(data)
+                data = transform_uid(data)
                 transform_auth = False
             destination.sendall(data)
     except Exception as e:
-        pass
+        print(f"Received error on direction {direction}: {e}")
     finally:
-        source.close()
-        destination.close()
+        if direction == Direction.TO_DBUS:
+            source.close()
+            destination.close()
 
 
-def start_dbus_proxy(client: str, dbus: str, buffer_size: int) -> None:
+def start_dbus_proxy(proxy_soc: str, dbus_soc: str, buffer_size: int) -> None:
     """
     Starts the dbus proxy.
 
@@ -77,27 +82,27 @@ def start_dbus_proxy(client: str, dbus: str, buffer_size: int) -> None:
     If will also forward the reverse but with no overrides.
 
     Args:
-        client (str): The path to the socket dbus clients connect to.
-        dbus (str): The path to the dbus client to forward traffic to.
+        proxy_soc (str): The path to the socket dbus clients connect to.
+        dbus_soc (str): The path to the dbus client to forward traffic to.
         buffer_size (int): The buffer size used for the transfer
     """
-    if os.path.exists(client):
-        os.remove(client)
+    if os.path.exists(proxy_soc):
+        os.remove(proxy_soc)
 
-    server = socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(dbus)
+    server = socket(AF_UNIX, SOCK_STREAM)
+    server.bind(proxy_soc)
     server.listen(SOCKET_BACKLOG)
 
-    print(f"[*] Proxy listening on {client}")
-    print(f"[*] Forwarding to {dbus}")
+    print(f"[*] Proxy listening on {proxy_soc}")
+    print(f"[*] Forwarding to {dbus_soc}")
 
     try:
         while True:
             client_sock, _ = server.accept()
 
             try:
-                target_sock = socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                target_sock.connect(dbus)
+                target_sock = socket(AF_UNIX, SOCK_STREAM)
+                target_sock.connect(dbus_soc)
             except Exception as e:
                 print(f"[!] Could not connect to target: {e}")
                 client_sock.close()
@@ -106,9 +111,9 @@ def start_dbus_proxy(client: str, dbus: str, buffer_size: int) -> None:
             threading.Thread(
                 target=forward,
                 args=(
-                    client_sock,
                     target_sock,
-                    Direction.TO_DBUS,
+                    client_sock,
+                    Direction.TO_CLIENT,
                     buffer_size,
                 ),
             ).start()
@@ -124,8 +129,8 @@ def start_dbus_proxy(client: str, dbus: str, buffer_size: int) -> None:
     except KeyboardInterrupt:
         print("\n[*] Shutting down.")
     finally:
-        if os.path.exists(client):
-            os.remove(client)
+        if os.path.exists(proxy_soc):
+            os.remove(proxy_soc)
 
 
 if __name__ == "__main__":
@@ -163,4 +168,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    start_unix_proxy(args.client_socket, args.system_dbus, args.buffer_size)
+    start_dbus_proxy(args.client_socket, args.system_dbus, args.buffer_size)
