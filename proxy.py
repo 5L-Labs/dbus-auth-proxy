@@ -1,34 +1,43 @@
 #!/usr/bin/python3
 
-from enum import Enum, auto
-from socket import socket, AF_UNIX, SOCK_STREAM, SHUT_RDWR
+from typing import Callable, Optional
+
+from socket import SO_PEERCRED, SOL_SOCKET
+from asyncio import StreamReader, StreamWriter
 
 import argparse
-import re
+import asyncio
+import struct
 import os
-import threading
+import re
 
-SOCKET_BACKLOG = 50
 DEFAULT_BUFFER = 4096
-REPLACEMENT_UID_HEX = str(os.getuid()).encode("ascii").hex().encode()
+PROCESS_UID = os.getuid()
+REPLACEMENT_UID_HEX = str(PROCESS_UID).encode("ascii").hex().encode()
 
 
-class Direction(Enum):
-    TO_DBUS = auto()
-    TO_CLIENT = auto()
+def get_socket_uid(writer: StreamWriter) -> Optional[int]:
+    sock = writer.get_extra_info("socket")
+    if sock is None:
+        return None
+
+    try:
+        peercred_bytes = sock.getsockopt(
+            SOL_SOCKET, SO_PEERCRED, struct.calcsize("3i")
+        )
+        _, uid, _ = struct.unpack("3i", peercred_bytes)
+        return uid
+    except (OSError, struct.error) as e:
+        print(f"Could not get peer credentials: {e}")
+        return None
 
 
-def transform_uid(data: bytes) -> bytes:
-    """
-    Replaces the UID for a AUTH EXTERNAL command to the current user's UID
-    if and only if UID was originally provided.
+def verify_and_transform(data: bytes, socket_uid: int) -> bytes:
+    if socket_uid != PROCESS_UID:
+        raise PermissionError(
+            f"Client is not root and Client UID ({socket_uid}) != Proxy UID ({PROCESS_UID})"
+        )
 
-    Args:
-        data (bytes): The data from the socket for the AUTH statement
-
-    Returns:
-        bytes: The data with the UID replaced.
-    """
     return re.sub(
         b"\x00AUTH EXTERNAL \\d+",
         b"\x00AUTH EXTERNAL " + REPLACEMENT_UID_HEX,
@@ -36,105 +45,81 @@ def transform_uid(data: bytes) -> bytes:
     )
 
 
-def forward(
-    source: socket, destination: socket, direction: Direction, buffer_size: int
+async def forward(
+    from_stream: StreamReader, to_stream: StreamWriter, buffer_size: int
 ) -> None:
-    """
-    Forwards data from source socket to destination socket while replacing AUTH
-    EXTERNAL UIDs.
+    while not from_stream.at_eof():
+        data = await from_stream.read(buffer_size)
+        if not data:
+            break
+        to_stream.write(data)
+        await to_stream.drain()
 
-    Replacement only happens for the first dbus command going from client to
-    dbus. All other data is forwarded blindly.
-
-    Args:
-        source(socket): The source socket
-        destination(socket): The destination socket
-        direction(Direction): If we're forwarding to or from dbus
-        buffer_size(int): The buffer size used for forwarding
-    """
-    transform_auth = direction == Direction.TO_DBUS
-    source.settimeout(25.0)
-    try:
-        while True:
-            data = source.recv(buffer_size)
-            if not data:
-                break
-
-            if transform_auth:
-                data = transform_uid(data)
-                transform_auth = False
-            destination.sendall(data)
-    except Exception as e:
-        print(f"Received error on direction {direction}: {e}")
-    finally:
-        print(f"Shutting down on {direction}")
-        # This will send twice
-        destination.shutdown(SHUT_RDWR)
-        source.close()
+    await to_stream.drain()
 
 
-def start_dbus_proxy(proxy_soc: str, dbus_soc: str, buffer_size: int) -> None:
-    """
-    Starts the dbus proxy.
+async def run_proxy(
+    auth_data: bytes,
+    upstream_reader: StreamReader,
+    upstream_writer: StreamWriter,
+    dbus_soc: str,
+    buffer_size: int,
+) -> None:
+    (downstream_reader, downstream_writer) = (
+        await asyncio.open_unix_connection(path=dbus_soc)
+    )
 
-    This will forward traffic from the client to dbus, while overriding UID for
-    EXTERNAL AUTH if provided to the current running user's UID.
+    downstream_writer.write(auth_data)
+    await downstream_writer.drain()
 
-    If will also forward the reverse but with no overrides.
+    dbus_to_client = asyncio.create_task(
+        forward(downstream_reader, upstream_writer, buffer_size)
+    )
+    client_to_dbus = asyncio.create_task(
+        forward(upstream_reader, downstream_writer, buffer_size)
+    )
 
-    Args:
-        proxy_soc (str): The path to the socket dbus clients connect to.
-        dbus_soc (str): The path to the dbus client to forward traffic to.
-        buffer_size (int): The buffer size used for the transfer
-    """
-    if os.path.exists(proxy_soc):
-        os.remove(proxy_soc)
+    await asyncio.wait(
+        {dbus_to_client, client_to_dbus}, return_when=asyncio.FIRST_COMPLETED
+    )
 
-    server = socket(AF_UNIX, SOCK_STREAM)
-    server.bind(proxy_soc)
-    server.listen(SOCKET_BACKLOG)
+    downstream_writer.close()
+    await downstream_writer.wait_closed()
 
-    print(f"[*] Proxy listening on {proxy_soc}")
-    print(f"[*] Forwarding to {dbus_soc}")
+
+async def client_callback(
+    reader: StreamReader, writer: StreamWriter, dbus_soc: str, buffer_size: int
+) -> None:
+    socket_uid = get_socket_uid(writer)
+    if socket_uid is None:
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        return
 
     try:
-        while True:
-            client_sock, _ = server.accept()
+        auth_data = await reader.readline()
+        auth_data = verify_and_transform(auth_data, socket_uid)
 
-            try:
-                target_sock = socket(AF_UNIX, SOCK_STREAM)
-                target_sock.connect(dbus_soc)
-            except Exception as e:
-                print(f"[!] Could not connect to target: {e}")
-                client_sock.close()
-                continue
-
-            threading.Thread(
-                target=forward,
-                args=(
-                    target_sock,
-                    client_sock,
-                    Direction.TO_CLIENT,
-                    buffer_size,
-                ),
-            ).start()
-            threading.Thread(
-                target=forward,
-                args=(
-                    client_sock,
-                    target_sock,
-                    Direction.TO_DBUS,
-                    buffer_size,
-                ),
-            ).start()
-    except KeyboardInterrupt:
-        print("\n[*] Shutting down.")
+        await run_proxy(auth_data, reader, writer, dbus_soc, buffer_size)
+    except PermissionError as e:
+        print(f"[*] Permission Denied: {e}")
     finally:
-        if os.path.exists(proxy_soc):
-            os.remove(proxy_soc)
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
 
 
-if __name__ == "__main__":
+def gen_client_callback(
+    dbus_soc: str, buffer_size: int
+) -> Callable[[StreamReader, StreamWriter], Awaitable[None]]:
+    async def callback(reader: StreamReader, writer: StreamWriter) -> None:
+        await client_callback(reader, writer, dbus_soc, buffer_size)
+
+    return callback
+
+
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="""
         A dbus proxy that overwrites AUTH EXTERNAL commands's UID to current UID.
@@ -167,6 +152,34 @@ if __name__ == "__main__":
         """,
     )
 
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    start_dbus_proxy(args.client_socket, args.system_dbus, args.buffer_size)
+
+async def main(args: argparse.Namespace) -> None:
+    args = parse_args()
+
+    if os.path.exists(args.client_socket):
+        os.remove(args.client_socket)
+
+    handle_client = gen_client_callback(args.system_dbus, args.buffer_size)
+    server = await asyncio.start_unix_server(
+        handle_client, path=args.client_socket
+    )
+
+    print(f"[*] Proxy listening on {args.client_socket}")
+    print(f"[*] Forwarding to {args.system_dbus}")
+
+    await server.serve_forever()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    try:
+        if os.path.exists(args.client_socket):
+            os.remove(args.client_socket)
+        asyncio.run(main(args))
+    except KeyboardInterrupt as e:
+        print("[*] Shutting Down")
+    finally:
+        if os.path.exists(args.client_socket):
+            os.remove(args.client_socket)
