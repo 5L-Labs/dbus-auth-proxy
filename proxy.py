@@ -5,13 +5,13 @@ from typing import Callable, Optional
 from socket import SO_PEERCRED, SOL_SOCKET
 from asyncio import StreamReader, StreamWriter
 
-import argparse
 import asyncio
 import struct
 import os
 import re
 
-DEFAULT_BUFFER = 4096
+from opts import Options, get_opts
+
 PROCESS_UID = os.getuid()
 REPLACEMENT_UID_HEX = str(PROCESS_UID).encode("ascii").hex().encode()
 
@@ -58,7 +58,7 @@ async def forward(
     await to_stream.drain()
 
 
-async def run_proxy(
+async def handle_client(
     auth_data: bytes,
     upstream_reader: StreamReader,
     upstream_writer: StreamWriter,
@@ -101,7 +101,7 @@ async def client_callback(
         auth_data = await reader.readline()
         auth_data = verify_and_transform(auth_data, socket_uid)
 
-        await run_proxy(auth_data, reader, writer, dbus_soc, buffer_size)
+        await handle_client(auth_data, reader, writer, dbus_soc, buffer_size)
     except PermissionError as e:
         print(f"[*] Permission Denied: {e}")
     finally:
@@ -119,67 +119,29 @@ def gen_client_callback(
     return callback
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="""
-        A dbus proxy that overwrites AUTH EXTERNAL commands's UID to current UID.
+async def run_proxy(opts: Options) -> None:
+    if os.path.exists(opts.client_socket):
+        os.remove(opts.client_socket)
 
-        UIDs will only be overwritten if they are provided.
-        """,
-    )
-
-    parser.add_argument(
-        "client_socket",
-        help="""
-        The path to the socket the dbus client connects to, will be created
-        """,
-    )
-
-    parser.add_argument(
-        "system_dbus",
-        help="""
-        The socket for the system dbus. Normally /run/dbus/system_bus_socket
-        for system dbus.
-        """,
-    )
-
-    parser.add_argument(
-        "-b",
-        "--buffer_size",
-        default=DEFAULT_BUFFER,
-        help="""
-        The buffer size used for forwarding
-        """,
-    )
-
-    return parser.parse_args()
-
-
-async def main(args: argparse.Namespace) -> None:
-    args = parse_args()
-
-    if os.path.exists(args.client_socket):
-        os.remove(args.client_socket)
-
-    handle_client = gen_client_callback(args.system_dbus, args.buffer_size)
+    handle_client = gen_client_callback(opts.system_dbus, opts.buffer_size)
     server = await asyncio.start_unix_server(
-        handle_client, path=args.client_socket
+        handle_client, path=opts.client_socket
     )
 
-    print(f"[*] Proxy listening on {args.client_socket}")
-    print(f"[*] Forwarding to {args.system_dbus}")
+    print(f"[*] Proxy listening on {opts.client_socket}")
+    print(f"[*] Forwarding to {opts.system_dbus}")
 
     await server.serve_forever()
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    opts = get_opts()
     try:
-        if os.path.exists(args.client_socket):
-            os.remove(args.client_socket)
-        asyncio.run(main(args))
+        if os.path.exists(opts.client_socket):
+            os.remove(opts.client_socket)
+        asyncio.run(run_proxy(opts))
     except KeyboardInterrupt as e:
         print("[*] Shutting Down")
     finally:
-        if os.path.exists(args.client_socket):
-            os.remove(args.client_socket)
+        if os.path.exists(opts.client_socket):
+            os.remove(opts.client_socket)
