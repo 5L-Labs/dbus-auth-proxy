@@ -1,4 +1,28 @@
 #!/usr/bin/python3
+"""
+dbus-auth-proxy is a proxy that sets up a bi-directional proxy between a socket
+that it creates the the system_dbus.
+
+It then rewrite the AUTH EXTERNAL message's UID to it's owner's UID.
+
+This is meant for apps running in containers that need to access dbus but do not
+or can not run in userns=keep-id mode. In such cases clients which formulate
+the AUTH EXTERNAL message will use the UID inside the container, often 0. When
+the request routes out of the container the socket's UID will be different,
+leading to auth failures.
+
+Instead, we can run dbus-auth-proxy in a container using userns=keep-id since
+there's no requirement for dbus-auth-proxy to run as root. Then we mount the
+socket created by dbus-auth-proxy to the target app's /run/dbus so that the
+target app will send system dbus requests to dbus-auth-proxy. dbus-auth-proxy
+will then check the connection's UID matches it's own. It then fixes the AUTH
+EXTERNAL UID to it's own as well as open a connection to the true system dbus.
+
+All three UID (client connection/AUTH/dbus connection) will then be seen as the
+same both inside and outside containers.
+
+All remaining data is forward directly without modification both ways.
+"""
 
 from typing import Callable, Optional
 
