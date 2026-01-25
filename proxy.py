@@ -15,8 +15,10 @@ Instead, we can run dbus-auth-proxy in a container using userns=keep-id since
 there's no requirement for dbus-auth-proxy to run as root. Then we mount the
 socket created by dbus-auth-proxy to the target app's /run/dbus so that the
 target app will send system dbus requests to dbus-auth-proxy. dbus-auth-proxy
-will then check the connection's UID matches it's own. It then fixes the AUTH
-EXTERNAL UID to it's own as well as open a connection to the true system dbus.
+will then check the connection's UID matches it's own. This ensure that the
+proxy does not grant any privileges that the connector doesn't already have. It
+then fixes the AUTH EXTERNAL UID to it's own as well as open a connection to
+the true system dbus.
 
 All three UID (client connection/AUTH/dbus connection) will then be seen as the
 same both inside and outside containers.
@@ -41,6 +43,14 @@ REPLACEMENT_UID_HEX = str(PROCESS_UID).encode("ascii").hex().encode()
 
 
 def get_socket_uid(writer: StreamWriter) -> Optional[int]:
+    """
+    Pulls out the UID of the client of the socket backing writer.
+
+    Args:
+        writer (StreamWriter): The writer for the socket of the connection
+    Returns:
+        Optional[int]: The UID of the client of the connection if found
+    """
     sock = writer.get_extra_info("socket")
     if sock is None:
         return None
@@ -57,6 +67,21 @@ def get_socket_uid(writer: StreamWriter) -> Optional[int]:
 
 
 def verify_and_transform(data: bytes, socket_uid: int) -> bytes:
+    """
+    Checks the socket uid is the same as our own and overwrites the dbus AUTH
+    UID to our own if so.
+
+    Transformation will only happen if the UID check passes *and* a UID is
+    provided in the AUTH message. If the AUTH does not have an UID, this function
+    will not add one.
+
+    Args:
+        data (bytes): The data for the dbus AUTH message
+        socket_uid (int): The uid of the socket client
+    Returns:
+        A transformed AUTH message if applicable, or the original message
+        otherwise.
+    """
     if socket_uid != PROCESS_UID:
         raise PermissionError(
             f"Client is not root and Client UID ({socket_uid}) != Proxy UID ({PROCESS_UID})"
@@ -72,6 +97,14 @@ def verify_and_transform(data: bytes, socket_uid: int) -> bytes:
 async def forward(
     from_stream: StreamReader, to_stream: StreamWriter, buffer_size: int
 ) -> None:
+    """
+    Forwards data from one stream to another with bufferring.
+
+    Args:
+        from_stream (StreamReader): The stream to forward from
+        to_stream (StreamReader): The stream to forward to
+        buffer_size (int): Size of the buffer to use
+    """
     while not from_stream.at_eof():
         data = await from_stream.read(buffer_size)
         if not data:
@@ -89,6 +122,24 @@ async def handle_client(
     dbus_soc: str,
     buffer_size: int,
 ) -> None:
+    """
+    Handles the client connection by opening a connection to the real dbus socket
+    and setting up a bi-directional forward to and from the real socket to the
+    client.
+
+    The initial auth_data will have it's UID fixed and sent through the dbus
+    connection before the two sides are connected.
+
+    Function will exit after the interaction from the client ends.
+
+    Args:
+        auth_data (bytes): The firest message from the client, the AUTH message
+        upstream_reader (streamreader): reader of data from the client
+        upstream_writer (streamwriter): writer of data to the client
+        dbus_soc (str): path to the real dbus socket
+        buffer_size (int): size of the buffer to use while forwarding to and
+                           from the client
+    """
     (downstream_reader, downstream_writer) = (
         await asyncio.open_unix_connection(path=dbus_soc)
     )
@@ -114,6 +165,19 @@ async def handle_client(
 async def client_callback(
     reader: StreamReader, writer: StreamWriter, dbus_soc: str, buffer_size: int
 ) -> None:
+    """
+    Callback to handle a new client connection.
+
+    Reads the initial auth message, transforms the UID, then blindly forwards
+    data both ways after that.
+
+    Args:
+        reader (streamreader): reader of data from the client
+        writer (streamwriter): writer of data to the client
+        dbus_soc (str): path to the real dbus socket
+        buffer_size (int): size of the buffer to use while forwarding to and
+                           from the client
+    """
     socket_uid = get_socket_uid(writer)
     if socket_uid is None:
         await writer.drain()
@@ -137,6 +201,23 @@ async def client_callback(
 def gen_client_callback(
     dbus_soc: str, buffer_size: int
 ) -> Callable[[StreamReader, StreamWriter], Awaitable[None]]:
+    """
+    Higher order function that generates a callback for the client connection
+    acceptor, meant to be used with asyncio's start_unix_server.
+
+    This function bascially bakes in context required to handle forwarding and
+    returns a function that only takes in reader and writer from the client
+    socket.
+
+    Args:
+        dbus_soc (str): path to the real dbus socket
+        buffer_size (int): size of the buffer to use while forwarding to and
+                           from the client
+    Returns:
+        Callable[[StreamReader, StreamWriter], Awaitable[None]]:
+            A callback suitable for the server acceptor
+    """
+
     async def callback(reader: StreamReader, writer: StreamWriter) -> None:
         await client_callback(reader, writer, dbus_soc, buffer_size)
 
@@ -144,6 +225,16 @@ def gen_client_callback(
 
 
 async def run_proxy(opts: Options) -> None:
+    """
+    Starts the proxy server and starts accepting dbus connections like a real
+    dbus socket.
+
+    Connections will trigger another connection to the real dbus socket and data
+    will be proxied to that after the AUTH message is fixed.
+
+    Args:
+        opts (Options): Options for the proxy
+    """
     if os.path.exists(opts.client_socket):
         os.remove(opts.client_socket)
 
