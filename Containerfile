@@ -2,8 +2,8 @@ FROM python:slim
 
 WORKDIR /proxy
 
-COPY proxy.py .
-COPY opts.py .
+COPY src/proxy.py .
+COPY src/opts.py .
 
 ENV BUFFER_SIZE 4096
 ENV CLIENT_SOCKET /run/dbus-auth-proxy/system_bus_socket
