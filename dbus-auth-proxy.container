@@ -1,0 +1,18 @@
+[Unit]
+Description=DBus Auth Proxy Container
+
+[Container]
+Image=dbus-auth-proxy:latest
+ContainerName=dbus-auth-proxy
+
+Volume=dbus-socket:/run/dbus-auth-proxy:rw
+Volume=/run/dbus:/run/dbus:rw
+
+UserNS=keep-id
+SecurityLabel=disable
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

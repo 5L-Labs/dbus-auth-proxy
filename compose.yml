@@ -1,0 +1,11 @@
+services:
+  dbus-auth-proxy:
+    image: dbus-auth-proxy:latest
+    container_name: dbus-auth-proxy
+    volumes:
+      - dbus-socket:/run/dbus-auth-proxy:rw
+      - /run/dbus:/run/dbus:rw
+    security_opt:
+      - label=disable
+volumes:
+  dbus-socket:
