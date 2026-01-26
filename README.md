@@ -14,7 +14,7 @@ apk add dbus
 dbus-send --system --print-reply --dest=org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.DBus.Introspectable.Introspect
 ```
 
-For example, if you run [Home Assistant](https://www.home-assistant.io/) in a rootless podman, you'll most likely have trouble with bluetooth:
+A more practical example: if you run [Home Assistant](https://www.home-assistant.io/) in a rootless podman, you'll most likely have trouble with bluetooth:
 
 > DBus authentication error; make sure the DBus socket is available and the user has the correct permissions: authentication failed: REJECTED: ['EXTERNAL']
 
@@ -44,7 +44,7 @@ apk add dbus
 dbus-send --system --print-reply --dest=org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.DBus.Introspectable.Introspect
 ```
 
-This should not work and list you the dbus endpoints. Doing the same for the Home Assistant container should also fix the bluetooth problem.
+This should now work and list you the dbus endpoints. Doing the same for the Home Assistant container should also fix the bluetooth problem.
 
 ## Details: Dbus Authentication
 
@@ -75,7 +75,7 @@ The pupose of the `dbus-auth-proxy` is to have an non-invasive way to get around
 
 It addresses the problem by intercepting the AUTH EXTERNAL message and fixing the user id. Essentially, `dbus-auth-proxy` creates it's own unix socket that mimics `/run/dbus/system_bus_socket`. When it receives an AUTH EXTERNAL message, it'll verify that the connection's user id is the same as it's own (meaning that dbus-auth-proxy is not granting the client any new credentials it doesn't already have). Then it fixes the AUTH EXTERNAL message's user id if supplied to it's own user id.
 
-Then, what we do this only run `dbus-auth-proxy` in a container with `--userns=keep-id`, then mount the proxy socket it produces as the system dbus socket into the target container. This way, when the target container's dbus client connects with AUTH EXTERNAL, `dbus-auth-proxy` will get the message instead and fix the user id to it's own user id, which is the right one (because it runs with `--userns=keep-id`). Then it just forwards the rest of the data bi-directionally.
+Then, what we do this to run `dbus-auth-proxy` in a container with `--userns=keep-id`. Afterwards, we mount the proxy socket it produces as the system dbus socket into the target container. This way, when the target container's dbus client connects with AUTH EXTERNAL, `dbus-auth-proxy` will get the message instead and fix the user id to it's own user id, which is the right one (because it runs with `--userns=keep-id`). Then it just forwards the rest of the data bi-directionally.
 
 ## License
 
