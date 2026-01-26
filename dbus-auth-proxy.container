@@ -2,7 +2,7 @@
 Description=DBus Auth Proxy Container
 
 [Container]
-Image=dbus-auth-proxy:latest
+Image=ghcr.io/yichenshen/dbus-auth-proxy:latest
 ContainerName=dbus-auth-proxy
 
 Volume=dbus-socket:/run/dbus-auth-proxy:rw
