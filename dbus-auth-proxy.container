@@ -1,15 +1,17 @@
 [Unit]
 Description=DBus Auth Proxy Container
+Requires=dbus.service
+After=dbus.service
 
 [Container]
 Image=ghcr.io/yichenshen/dbus-auth-proxy:latest
-ContainerName=dbus-auth-proxy
+AutoUpdate=registry
 
 Volume=dbus-socket:/run/dbus-auth-proxy:rw
 Volume=/run/dbus:/run/dbus:rw
 
 UserNS=keep-id
-SecurityLabel=disable
+SecurityLabelDisable=true
 
 [Service]
 Restart=on-failure
