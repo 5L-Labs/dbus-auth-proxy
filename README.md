@@ -28,13 +28,25 @@ This has been reported in a number of places:
 
 ## Running
 
-If you're not interested in the details, you can simply run this proxy in a container alongside the container you want dbus for.
+If you're not interested in the details, you can simply run this proxy in a container alongside the container you want dbus for. The image is built locally from this checkout (nothing is pulled from a registry other than the `python:slim` base image).
+
+Requires podman 5.2+ (first release with quadlet `.build` units). From a clone of this repo:
 
 ```
-cp dbus-auth-proxy.container ~/.config/containers/systemd/
-systemctl --user daemon-reload
+./quadlet/install.sh
 systemctl --user start dbus-auth-proxy
 ```
+
+`install.sh` copies `quadlet/dbus-auth-proxy.container` and renders `quadlet/dbus-auth-proxy.build.in` (with this checkout's absolute path) into `~/.config/containers/systemd/`. Starting the service builds `localhost/dbus-auth-proxy:latest` via the `dbus-auth-proxy-build` unit, then runs it. To start on boot without logging in, enable lingering: `loginctl enable-linger $USER`.
+
+To update after pulling new code, restart the build unit along with the service so the image is rebuilt from the checkout (podman's layer cache keeps this fast):
+
+```
+git pull
+systemctl --user restart dbus-auth-proxy-build dbus-auth-proxy
+```
+
+If you move the checkout, re-run `./quadlet/install.sh`.
 
 This will create a named volume called `dbus-socket`, and the container will register a `system_bus_socket` into this volume. You then simply mount this volume in place of `/run/dbus/` on the container you want dbus for.
 
