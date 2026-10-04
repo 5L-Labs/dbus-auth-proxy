@@ -56,7 +56,13 @@ apk add dbus
 dbus-send --system --print-reply --dest=org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.DBus.Introspectable.Introspect
 ```
 
-This should now work and list you the dbus endpoints. Doing the same for the Home Assistant container should also fix the bluetooth problem.
+This should now work and list you the dbus endpoints. Run the proxy and the client containers as the same user, and mount the volume (not the socket file) so clients see the new socket after the proxy restarts.
+
+For Home Assistant, use `Volume=dbus-socket:/run/dbus:rw` instead of the usual `/run/dbus:/run/dbus:ro`. This avoids `--userns=keep-id` on the Home Assistant container, which combined with rootless overlay/vfs storage can make it very slow.
+
+### Optional: filter with xdg-dbus-proxy
+
+To limit the container to BlueZ instead of everything your user can reach on the system bus, chain [xdg-dbus-proxy](https://github.com/flatpak/xdg-dbus-proxy) behind the proxy. Install it on the host (e.g. `apt install xdg-dbus-proxy`), copy `quadlet/dbus-filter.service` to `~/.config/systemd/user/` and `quadlet/dbus-auth-proxy.container.d/filter.conf` to `~/.config/containers/systemd/dbus-auth-proxy.container.d/`, then run `systemctl --user daemon-reload` and restart `dbus-auth-proxy`. Add a `--talk=` rule in `dbus-filter.service` for each other service the container needs, then `systemctl --user daemon-reload` and restart `dbus-filter`.
 
 ## Details: Dbus Authentication
 
