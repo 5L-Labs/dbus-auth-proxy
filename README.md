@@ -31,7 +31,7 @@ This has been reported in a number of places:
 This is a fork of [yichenshen/dbus-auth-proxy](https://github.com/yichenshen/dbus-auth-proxy). Either works for basic D-Bus access:
 
 - **Original**: pulls the published image `ghcr.io/yichenshen/dbus-auth-proxy:latest` and auto-updates from the registry. Follow the [upstream README](https://github.com/yichenshen/dbus-auth-proxy#running).
-- **This fork**: builds the image locally from your checkout via quadlet (no registry image, no auto-update) and forwards file descriptors passed over D-Bus. The original drops them, so fd-returning calls such as BlueZ `AcquireWrite`/`AcquireNotify` (used by Home Assistant's Bluetooth stack via bleak) hang. It also exits cleanly on SIGTERM. Instructions below.
+- **This fork**: builds the image locally from your checkout via quadlet (no registry image, no auto-update) and forwards file descriptors passed over D-Bus. The original drops them, so fd-returning calls such as BlueZ `AcquireWrite`/`AcquireNotify` (used by Home Assistant's Bluetooth stack via bleak) fail or hang, depending on the client. It also exits cleanly on SIGTERM. Instructions below.
 
 ## Running
 
