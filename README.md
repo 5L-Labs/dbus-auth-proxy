@@ -26,6 +26,13 @@ This has been reported in a number of places:
 - [Home Assistant Github Issue](https://github.com/home-assistant/core/issues/76429)
 - [Another forum post](https://community.home-assistant.io/t/bluetooth-dbus-authentication-error/803831)
 
+## Original vs. this fork
+
+This is a fork of [yichenshen/dbus-auth-proxy](https://github.com/yichenshen/dbus-auth-proxy). Either works for basic D-Bus access:
+
+- **Original**: pulls the published image `ghcr.io/yichenshen/dbus-auth-proxy:latest` and auto-updates from the registry. Follow the [upstream README](https://github.com/yichenshen/dbus-auth-proxy#running).
+- **This fork**: builds the image locally from your checkout via quadlet (no registry image, no auto-update) and forwards file descriptors passed over D-Bus. The original drops them, so fd-returning calls such as BlueZ `AcquireWrite`/`AcquireNotify` (used by Home Assistant's Bluetooth stack via bleak) fail or hang, depending on the client. It also exits cleanly on SIGTERM. Instructions below.
+
 ## Running
 
 If you're not interested in the details, you can simply run this proxy in a container alongside the container you want dbus for. The image is built locally from this checkout (nothing is pulled from a registry other than the `python:slim` base image).

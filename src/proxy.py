@@ -46,9 +46,9 @@ PROCESS_UID = os.getuid()
 REPLACEMENT_UID_HEX = str(PROCESS_UID).encode("ascii").hex().encode()
 # Most file descriptors the kernel passes in a single message (SCM_MAX_FD).
 MAX_FDS = 253
-# Same limits dbus-daemon applies to an auth line and a message.
+# Same limit dbus-daemon applies to an auth line. The first line is read
+# before the client's UID is rejected, so it must be bounded.
 MAX_AUTH_LINE = 16 * 1024
-MAX_MESSAGE = 128 * 1024 * 1024
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -201,25 +201,11 @@ async def recv_exact(sock: socket.socket, size: int) -> Tuple[bytes, List[int]]:
                 break
             data += chunk
     except BaseException:
+        # Also on cancellation, which happens when the other direction ends.
         for fd in fds:
             os.close(fd)
         raise
     return data, fds
-
-
-async def read_byte(sock: socket.socket) -> bytes:
-    """
-    Reads a single byte during auth, where no fds are expected.
-
-    Args:
-        sock (socket): The socket to read from
-    Returns:
-        bytes: The byte, or b"" on EOF
-    """
-    byte, fds = await recv_exact(sock, 1)
-    for fd in fds:
-        os.close(fd)
-    return byte
 
 
 async def read_line(sock: socket.socket) -> bytes:
@@ -235,9 +221,11 @@ async def read_line(sock: socket.socket) -> bytes:
     """
     line = b""
     while not line.endswith(b"\n"):
-        if len(line) > MAX_AUTH_LINE:
+        if len(line) >= MAX_AUTH_LINE:
             raise ConnectionError("Auth line too long")
-        byte = await read_byte(sock)
+        byte, fds = await recv_exact(sock, 1)
+        for fd in fds:
+            os.close(fd)
         if not byte:
             break
         line += byte
@@ -315,8 +303,6 @@ async def forward(
             body_len, _, fields_len = struct.unpack_from(order + "3I", header, 4)
             # Header fields are padded to a multiple of 8 before the body.
             remaining = (fields_len + 7) // 8 * 8 + body_len
-            if 16 + remaining > MAX_MESSAGE:
-                raise ConnectionError("D-Bus message too large")
             await send_with_fds(to_sock, header, fds)
         finally:
             for fd in fds:
@@ -425,8 +411,8 @@ async def client_callback(
         await handle_client(auth_data, sock, dbus_soc, buffer_size)
     except PermissionError as e:
         logging.warning(f"Permission Denied: {e}")
-    except OSError as e:
-        logging.warning(f"Connection failed: {e}")
+    except ConnectionError as e:
+        logging.warning(f"Connection closed: {e}")
     finally:
         sock.close()
 
